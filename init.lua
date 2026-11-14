@@ -219,6 +219,34 @@ do
   -- or just use <C-\><C-n> to exit terminal mode
   vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' })
 
+  -- Ctrl+Shift+; also exits terminal mode. Terminals can't natively send this
+  -- chord, so wezterm.lua binds it to send the CSI-u sequence \x1b[59;6u,
+  -- which Neovim decodes as <C-S-;>.
+  vim.keymap.set('t', '<C-S-;>', '<C-\\><C-n>', { desc = 'Exit terminal mode' })
+
+  -- Toggle a persistent terminal in a small bottom split (VS Code style).
+  -- The same terminal buffer (and shell session) is reused across toggles;
+  -- it is only recreated after its shell exits.
+  local term_buf = nil
+  local function toggle_terminal()
+    if term_buf and vim.api.nvim_buf_is_valid(term_buf) then
+      local win = vim.fn.bufwinid(term_buf)
+      if win ~= -1 then
+        vim.api.nvim_win_close(win, false)
+        return
+      end
+    end
+    vim.cmd 'botright 10split'
+    if term_buf and vim.api.nvim_buf_is_valid(term_buf) then
+      vim.api.nvim_win_set_buf(0, term_buf)
+    else
+      vim.cmd 'terminal'
+      term_buf = vim.api.nvim_get_current_buf()
+    end
+    vim.cmd 'startinsert'
+  end
+  vim.keymap.set('n', '<leader>j', toggle_terminal, { desc = 'Toggle bottom terminal' })
+
   -- pasting over a selection no longer clobbers your clipboard
   vim.cmd [[ xnoremap <expr> p 'pgv"'.v:register.'y' ]]
 
@@ -236,6 +264,30 @@ do
   vim.keymap.set('n', '<C-l>', '<C-w><C-l>', { desc = 'Move focus to the right window' })
   vim.keymap.set('n', '<C-j>', '<C-w><C-j>', { desc = 'Move focus to the lower window' })
   vim.keymap.set('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus to the upper window' })
+
+  -- Readline-style line motions, as in bash: CTRL+a to the start, CTRL+e to the end.
+  -- Deliberately NOT mapped in terminal mode ('t'), where the shell's own readline
+  -- needs to receive these keys untouched.
+  --
+  -- This costs the vim defaults on those keys: i_CTRL-A (re-insert last inserted
+  -- text), i_CTRL-E (copy the char below), n_CTRL-A (increment the number under
+  -- the cursor) and n_CTRL-E (scroll down one line).
+  vim.keymap.set('i', '<C-a>', '<Home>', { desc = 'Go to start of line' })
+  vim.keymap.set('i', '<C-e>', '<End>', { desc = 'Go to end of line' })
+  vim.keymap.set('n', '<C-a>', '0', { desc = 'Go to start of line' })
+  vim.keymap.set('n', '<C-e>', '$', { desc = 'Go to end of line' })
+
+  -- CTRL+q quits everything, prompting about unsaved buffers rather than erroring
+  -- (bare :qa) or discarding them (:qa!). This shadows the built-in <C-q>, which is
+  -- just an alias for <C-v> / blockwise Visual, so <C-v> still covers that.
+  vim.keymap.set('n', '<C-q>', '<cmd>confirm qa<cr>', { desc = 'Quit nvim' })
+
+  -- ...and the readline word motions: ALT+f forward a word, ALT+b back a word.
+  -- These keys have no vim default, so nothing is given up here.
+  vim.keymap.set('i', '<M-f>', '<C-Right>', { desc = 'Go forward one word' })
+  vim.keymap.set('i', '<M-b>', '<C-Left>', { desc = 'Go back one word' })
+  vim.keymap.set('n', '<M-f>', 'w', { desc = 'Go forward one word' })
+  vim.keymap.set('n', '<M-b>', 'b', { desc = 'Go back one word' })
 
   -- NOTE: Some terminals have colliding keymaps or are not able to send distinct keycodes
   -- vim.keymap.set("n", "<C-S-h>", "<C-w>H", { desc = "Move window to the left" })
@@ -502,7 +554,20 @@ do
     --     i = { ['<c-enter>'] = 'to_fuzzy_refine' },
     --   },
     -- },
-    -- pickers = {}
+    defaults = {
+      mappings = {
+        i = { ['<C-s>'] = require('telescope.actions').select_horizontal },
+        n = { ['<C-s>'] = require('telescope.actions').select_horizontal },
+      },
+    },
+    pickers = {
+      buffers = {
+        mappings = {
+          i = { ['<C-x>'] = require('telescope.actions').delete_buffer },
+          n = { ['<C-x>'] = require('telescope.actions').delete_buffer },
+        },
+      },
+    },
     extensions = {
       ['ui-select'] = { require('telescope.themes').get_dropdown() },
     },
@@ -548,6 +613,13 @@ do
       -- Fuzzy find all the symbols in your current document.
       -- Symbols are things like variables, functions, types, etc.
       vim.keymap.set('n', 'gO', builtin.lsp_document_symbols, { buffer = buf, desc = 'Open Document Symbols' })
+
+      -- Just the callables in the current document, which is usually what you want
+      -- when gO's full symbol list is too noisy. 'method' is listed alongside
+      -- 'function' because LSP reports class methods under that separate kind.
+      vim.keymap.set('n', '<leader>sm', function()
+        builtin.lsp_document_symbols { symbols = { 'function', 'method' } }
+      end, { buffer = buf, desc = '[S]earch [M]ethods in document' })
 
       -- Fuzzy find all the symbols in your current workspace.
       -- Similar to document symbols, except searches over your entire project.
@@ -696,7 +768,17 @@ do
   ---@type table<string, vim.lsp.Config>
   local servers = {
     -- clangd = {},
-    -- gopls = {},
+    gopls = {
+      settings = {
+        gopls = {
+          gofumpt = true,
+          staticcheck = true,
+          analyses = {
+            unusedparams = true,
+          },
+        },
+      },
+    },
     -- pyright = {},
     -- rust_analyzer = {},
     --
@@ -765,6 +847,8 @@ do
   local ensure_installed = vim.tbl_keys(servers or {})
   vim.list_extend(ensure_installed, {
     -- You can add other tools here that you want Mason to install
+    'goimports', -- Go formatter that also fixes imports
+    'gofumpt', -- Stricter gofmt
   })
 
   require('mason-tool-installer').setup { ensure_installed = ensure_installed }
@@ -787,6 +871,7 @@ do
     format_on_save = function(bufnr)
       -- You can specify filetypes to autoformat on save here:
       local enabled_filetypes = {
+        go = true,
         -- lua = true,
         -- python = true,
       }
@@ -801,6 +886,7 @@ do
     },
     -- You can also specify external formatters in here.
     formatters_by_ft = {
+      go = { 'goimports', 'gofumpt' },
       -- rust = { 'rustfmt' },
       -- Conform can also run multiple formatters sequentially
       -- python = { "isort", "black" },
@@ -857,7 +943,7 @@ do
       -- <c-k>: Toggle signature help
       --
       -- See `:help blink-cmp-config-keymap` for defining your own keymap
-      preset = 'default',
+      preset = 'super-tab',
 
       -- For more advanced Luasnip keymaps (e.g. selecting choice nodes, expansion) see:
       --    https://github.com/L3MON4D3/LuaSnip?tab=readme-ov-file#keymaps
@@ -909,7 +995,7 @@ do
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'diff', 'go', 'gomod', 'gosum', 'gowork', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -972,7 +1058,7 @@ do
   --  Uncomment any of the lines below to enable them (you will need to restart nvim).
   --
   -- require 'kickstart.plugins.debug'
-  -- require 'kickstart.plugins.indent_line'
+  require 'kickstart.plugins.indent_line'
   -- require 'kickstart.plugins.lint'
   -- require 'kickstart.plugins.autopairs'
   require 'kickstart.plugins.neo-tree'
